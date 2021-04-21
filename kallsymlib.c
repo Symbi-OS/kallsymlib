@@ -28,7 +28,8 @@
 #define STR_HELPER(x) #x
 #define STR(x) STR_HELPER(x)
 
-//#define ENABLE_VERBOSE
+// #define ENABLE_VERBOSE
+// #define ENABLE_MEM_AUDIT
 
 #ifdef ENABLE_VERBOSE
 #define VPRINTF(fmt, ...) fprintf(stderr, fmt, __VA_ARGS__)
@@ -38,8 +39,17 @@
 #define VPRINT(...)
 #endif
 
+#ifdef ENABLE_MEM_AUDIT
+static int alloc_count = 0;
+static int free_count = 0;
+#define MEM_AUDIT(stmt) { stmt; }
+#else
+#define MEM_AUDIT(stmt)
+#endif
+
+
 struct HASH_NODE {
-  struct kallsymlib_info info;
+struct kallsymlib_info info;
   UT_hash_handle hh;
   int count;
 };
@@ -64,8 +74,11 @@ kallsymlib_init(char *path)
 
   // The use of %m below causes fscanf to allocate memory for the strings
   while ((n = fscanf(fp, "%llx %c %ms", 
-		     &info.addr, &info.type, &info.symbol, &info.extra)
+		     &info.addr, &info.type, &info.symbol)
 	  ) != EOF) {
+
+    MEM_AUDIT(alloc_count++);
+
     info.next = NULL;    // set unread fields to defaults
     info.extra = NULL;
 
@@ -79,6 +92,7 @@ kallsymlib_init(char *path)
       n=fscanf(fp, "%ms", &info.extra);
       if (n==EOF) break;
       else {
+	MEM_AUDIT(alloc_count++);
 	VPRINTF(" (%p)%s", info.extra, info.extra); 
       }
     }
@@ -88,6 +102,7 @@ kallsymlib_init(char *path)
     if (node==NULL) {
       // first defintion for symbol add symbol to hash table
       node = (struct HASH_NODE *)malloc(sizeof(struct HASH_NODE));
+      MEM_AUDIT(alloc_count++);
       node->info = info;
       node->count = 1;
       HASH_ADD_KEYPTR(hh, HashTable, 
@@ -96,6 +111,7 @@ kallsymlib_init(char *path)
       // second definition add to existing node for symbol
       info.next = node->info.next;
       node->info.next = malloc(sizeof(struct kallsymlib_info));
+      MEM_AUDIT(alloc_count++);
       *(node->info.next) = info;
       node->count++;
     }
@@ -158,4 +174,48 @@ kallsymlib_print_info(FILE *fp, struct kallsymlib_info *info)
     info = info->next;
   }
   fprintf(fp, "\n");
+}
+
+int
+kallsymlib_cleanup()
+{
+  if (kallsymlib_status != KALLSYMLIB_INITIALIZED) return 0;
+  struct HASH_NODE *node, *tmp;
+  struct kallsymlib_info *info;
+
+  HASH_ITER(hh, HashTable, node, tmp) {
+    HASH_DEL(HashTable, node);  /* delete it (users advances to next) */
+    // walk list of symbol info and free memory
+    for (info=node->info.next; info!=NULL; ) {
+      struct kallsymlib_info *tinfo = info->next;
+      if (info->symbol) { free(info->symbol); MEM_AUDIT(free_count++); }
+      if (info->extra) { free(info->extra); MEM_AUDIT(free_count++); }
+      free(info); 
+      MEM_AUDIT(free_count++);
+      info = tinfo;
+    }
+    // free info fields of the head node info
+    if (node->info.symbol) { 
+      free(node->info.symbol); 
+      MEM_AUDIT(free_count++);
+    }
+    if (node->info.extra) { 
+      free(node->info.extra);
+      MEM_AUDIT(free_count++);
+    }
+     free(node);   // free the node
+     MEM_AUDIT(free_count++);
+   }
+   HashTable = NULL;
+   kallsymlib_status = KALLSYMLIB_NOT_INITIALIZED;
+   MEM_AUDIT(
+    fprintf(stderr, "MEM_AUDIT: alloc_count = %d free_count = %d\n",
+		    alloc_count, free_count)
+   );
+   MEM_AUDIT(
+   if (free_count != alloc_count) 
+     fprintf(stderr, "ERROR: MEM_AUDIT FAILURE\n")
+     );
+   MEM_AUDIT(free_count = 0);
+   MEM_AUDIT(alloc_count = 0);
 }

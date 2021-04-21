@@ -50,6 +50,7 @@ main(int argc, char **argv)
     }
     free(symbol);
   }
+  kallsymlib_cleanup();
 
   return 0;
 }
